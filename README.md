@@ -169,6 +169,33 @@ The tests are intentionally smoke-level:
 
 They verify that the workflow is wired correctly, but they do not prove publication-level numerical convergence.
 
+## Plotting
+
+Generate both analysis and report figures:
+
+```bash
+julia scripts/plot_results.jl --style all
+```
+
+Generate only analysis figures:
+
+```bash
+julia scripts/plot_results.jl --style analysis
+```
+
+Generate only the cleaner report figure:
+
+```bash
+julia scripts/plot_results.jl --style report
+```
+
+Generated files are written to:
+
+- `figures/analysis/ising_diagnostics.png`
+- `figures/analysis/xxz_diagnostics.png`
+- `figures/analysis/comparison_overview.png`
+- `figures/report/dqpt_qualitative_comparison.png`
+
 ## Interpretation and limits
 
 This repository should be read as:
