@@ -5,10 +5,13 @@ ENV["GKSwstype"] = get(ENV, "GKSwstype", "100")
 using Plots
 
 export load_tsv_table
+export load_osborne_summary
 export parse_plot_cli
 export planned_figure_paths
 export build_figure_bundle
+export build_osborne_longrange_window_figure
 export render_figures
+export render_osborne_longrange_window_figure
 
 function load_tsv_table(path::AbstractString)
     lines = readlines(path)
@@ -27,6 +30,60 @@ function load_tsv_table(path::AbstractString)
     end
 
     return table
+end
+
+function load_osborne_summary(path::AbstractString)
+    lines = readlines(path)
+    isempty(lines) && throw(ArgumentError("empty summary file: $path"))
+
+    entries = NamedTuple[]
+    current = nothing
+
+    for line in lines
+        startswith(line, "## ") || startswith(line, "- ") || continue
+
+        if startswith(line, "## ")
+            isnothing(current) || push!(entries, current)
+            label = strip(line[4:end])
+            m = match(r"^(.*)\(hz=([^\)]+)\)$", label)
+            m === nothing && throw(ArgumentError("invalid Osborne heading in $path: $line"))
+            current = (
+                label = strip(m.captures[1]),
+                hz = parse(Float64, m.captures[2]),
+                metrics = Dict{Symbol, Any}(),
+            )
+            continue
+        end
+
+        isnothing(current) && throw(ArgumentError("metric before heading in $path"))
+        metric_line = strip(line[3:end])
+        parts = split(metric_line, " = "; limit = 2)
+        length(parts) == 2 || throw(ArgumentError("invalid Osborne metric line in $path: $line"))
+        key = Symbol(parts[1])
+        raw = parts[2]
+
+        value =
+            if key == :classification
+                Symbol(raw)
+            elseif key == :max_allocated_bond
+                parse(Int, raw)
+            else
+                parse(Float64, raw)
+            end
+
+        current.metrics[key] = value
+    end
+
+    isnothing(current) || push!(entries, current)
+
+    return map(entries) do entry
+        return (
+            label = entry.label,
+            hz = entry.hz,
+            classification = entry.metrics[:classification],
+            metrics = entry.metrics,
+        )
+    end
 end
 
 function parse_plot_cli(args::Vector{String})
@@ -261,6 +318,128 @@ function build_figure_bundle(ising_table, xxz_table; style::Symbol = :all)
     return figures
 end
 
+function _osborne_window_rows(specs)
+    rows = NamedTuple[]
+    for spec in sort(collect(specs); by = x -> x.length)
+        for entry in load_osborne_summary(spec.path)
+            push!(
+                rows,
+                (
+                    length = spec.length,
+                    hz = entry.hz,
+                    classification = entry.classification,
+                    peak_time = entry.metrics[:peak_time],
+                    peak_rate = entry.metrics[:peak_rate],
+                    peak_mz = entry.metrics[:peak_mz],
+                    max_entropy = entry.metrics[:max_entropy],
+                    energy_drift = entry.metrics[:energy_drift],
+                    max_allocated_bond = entry.metrics[:max_allocated_bond],
+                ),
+            )
+        end
+    end
+    return rows
+end
+
+function _classified_rows(rows, classification::Symbol)
+    return sort(filter(row -> row.classification == classification, rows); by = x -> x.length)
+end
+
+function build_osborne_longrange_window_figure(specs)
+    rows = _osborne_window_rows(specs)
+    manifold = _classified_rows(rows, :manifold)
+    branch = _classified_rows(rows, :branch)
+
+    _style_defaults!(:report)
+
+    p1 = plot(
+        [row.length for row in manifold],
+        [row.hz for row in manifold];
+        color = :teal,
+        marker = :circle,
+        ms = 7,
+        xlabel = "chain length L",
+        ylabel = "candidate hz",
+        title = "Long-range confinement window",
+        label = "manifold",
+    )
+    plot!(
+        p1,
+        [row.length for row in branch],
+        [row.hz for row in branch];
+        color = :firebrick,
+        marker = :diamond,
+        ms = 7,
+        label = "branch",
+    )
+
+    p2 = plot(
+        [row.length for row in manifold],
+        [row.peak_mz for row in manifold];
+        color = :teal,
+        marker = :circle,
+        ms = 7,
+        xlabel = "chain length L",
+        ylabel = "peak mz",
+        title = "Order parameter at dominant peak",
+        label = "manifold",
+    )
+    plot!(
+        p2,
+        [row.length for row in branch],
+        [row.peak_mz for row in branch];
+        color = :firebrick,
+        marker = :diamond,
+        ms = 7,
+        label = "branch",
+    )
+    hline!(p2, [0.0]; color = :gray45, ls = :dash, label = nothing)
+
+    p3 = plot(
+        [row.length for row in manifold],
+        [row.peak_rate for row in manifold];
+        color = :teal,
+        marker = :circle,
+        ms = 7,
+        xlabel = "chain length L",
+        ylabel = "peak rate",
+        title = "Dominant DQPT peak",
+        label = "manifold",
+    )
+    plot!(
+        p3,
+        [row.length for row in branch],
+        [row.peak_rate for row in branch];
+        color = :firebrick,
+        marker = :diamond,
+        ms = 7,
+        label = "branch",
+    )
+
+    p4 = plot(
+        [row.length for row in manifold],
+        [row.max_entropy for row in manifold];
+        color = :teal,
+        marker = :circle,
+        ms = 7,
+        xlabel = "chain length L",
+        ylabel = "max entropy",
+        title = "Entanglement scale",
+        label = "manifold",
+    )
+    plot!(
+        p4,
+        [row.length for row in branch],
+        [row.max_entropy for row in branch];
+        color = :firebrick,
+        marker = :diamond,
+        ms = 7,
+        label = "branch",
+    )
+
+    return plot(p1, p2, p3, p4; layout = (2, 2), size = (1280, 900))
+end
+
 function render_figures(;
     style::Symbol = :all,
     root::AbstractString = "figures",
@@ -279,6 +458,22 @@ function render_figures(;
     end
 
     return paths
+end
+
+function render_osborne_longrange_window_figure(;
+    root::AbstractString = "figures",
+    specs = [
+        (length = 6, path = joinpath("outputs", "osborne_longrange_candidate_longrange_summary.md")),
+        (length = 8, path = joinpath("outputs", "osborne_longrange_L8_candidate_longrange_summary.md")),
+        (length = 10, path = joinpath("outputs", "osborne_longrange_L10_candidate_longrange_summary.md")),
+        (length = 12, path = joinpath("outputs", "osborne_longrange_L12_candidate_longrange_summary.md")),
+    ],
+)
+    fig = build_osborne_longrange_window_figure(specs)
+    path = joinpath(root, "report", "osborne_longrange_window.png")
+    mkpath(dirname(path))
+    savefig(fig, path)
+    return path
 end
 
 end
