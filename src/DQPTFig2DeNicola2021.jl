@@ -39,6 +39,7 @@ function paper_fig2_preset(label::Symbol)
             Jz = 1.0,
             hx = 0.1,
             hz = 1.0,
+            tmax = 8.0,
         )
     elseif label == :edqpt
         return (
@@ -49,6 +50,7 @@ function paper_fig2_preset(label::Symbol)
             Jz = 1.0,
             hx = 0.3,
             hz = 0.1,
+            tmax = 4.0,
         )
     else
         throw(ArgumentError("unknown Fig. 2 preset: $label"))
@@ -79,9 +81,11 @@ end
 
 function parse_fig2_cli(args::Vector{String})
     mode = :all
-    steps = 80
+    steps = nothing
     dt = 0.05
     output_prefix = "dqpt_fig2_denicola_2021"
+    max_bond = 200
+    cutoff = 1e-9
 
     i = 1
     if !isempty(args) && args[1] in ("pdqpt", "edqpt", "all")
@@ -100,6 +104,10 @@ function parse_fig2_cli(args::Vector{String})
             dt = parse(Float64, value)
         elseif key == "--output-prefix"
             output_prefix = value
+        elseif key == "--max-bond"
+            max_bond = parse(Int, value)
+        elseif key == "--cutoff"
+            cutoff = parse(Float64, value)
         else
             throw(ArgumentError("unknown argument: $key"))
         end
@@ -112,6 +120,8 @@ function parse_fig2_cli(args::Vector{String})
         steps = steps,
         dt = dt,
         output_prefix = output_prefix,
+        max_bond = max_bond,
+        cutoff = cutoff,
     )
 end
 
