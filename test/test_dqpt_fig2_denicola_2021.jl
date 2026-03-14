@@ -79,3 +79,73 @@ end
     mi = mutual_information_bundle(rho_bell)
     @test keys(mi) == Set(["I12", "I13", "I12_3", "I12_4"])
 end
+
+@testset "Fig2 XXZ smoke tests" begin
+    pdqpt = run_fig2_xxz_quench(;
+        preset = :pdqpt,
+        dt = 0.05,
+        steps = 2,
+        max_bond = 16,
+        cutoff = 1e-8,
+    )
+    @test pdqpt.preset == :pdqpt
+    @test length(pdqpt.times) == 3
+    @test length(pdqpt.rate) == 3
+    @test length(pdqpt.mx) == 3
+    @test length(pdqpt.s1) == 3
+    @test length(pdqpt.s2) == 3
+    @test length(pdqpt.lambda1) == 3
+    @test length(pdqpt.lambda2) == 3
+    @test length(pdqpt.o11) == 3
+    @test length(pdqpt.ood) == 3
+    @test length(pdqpt.I12) == 3
+    @test length(pdqpt.I13) == 3
+    @test length(pdqpt.I12_3) == 3
+    @test length(pdqpt.I12_4) == 3
+    @test isapprox(pdqpt.rate[1], 0.0; atol = 1e-9)
+    @test isapprox(pdqpt.mx[1], 1.0; atol = 1e-9)
+    @test isapprox(pdqpt.I12[1], 0.0; atol = 1e-9)
+    @test isapprox(pdqpt.I13[1], 0.0; atol = 1e-9)
+    @test isapprox(pdqpt.I12_3[1], 0.0; atol = 1e-9)
+    @test isapprox(pdqpt.I12_4[1], 0.0; atol = 1e-9)
+    @test all(isfinite, pdqpt.rate)
+    @test all(isfinite, pdqpt.mx)
+    @test all(isfinite, pdqpt.s1)
+    @test all(isfinite, pdqpt.s2)
+    @test all(isfinite, pdqpt.lambda1)
+    @test all(isfinite, pdqpt.lambda2)
+    @test all(isfinite, pdqpt.o11)
+    @test all(isfinite, pdqpt.ood)
+    @test all(isfinite, pdqpt.I12)
+    @test all(isfinite, pdqpt.I13)
+    @test all(isfinite, pdqpt.I12_3)
+    @test all(isfinite, pdqpt.I12_4)
+
+    edqpt = run_fig2_xxz_quench(;
+        preset = :edqpt,
+        dt = 0.05,
+        steps = 2,
+        max_bond = 16,
+        cutoff = 1e-8,
+    )
+    @test edqpt.preset == :edqpt
+    @test length(edqpt.times) == 3
+    @test isapprox(edqpt.rate[1], 0.0; atol = 1e-9)
+    @test isapprox(edqpt.mx[1], 1.0; atol = 1e-9)
+    @test isapprox(edqpt.I12[1], 0.0; atol = 1e-9)
+    @test isapprox(edqpt.I13[1], 0.0; atol = 1e-9)
+    @test isapprox(edqpt.I12_3[1], 0.0; atol = 1e-9)
+    @test isapprox(edqpt.I12_4[1], 0.0; atol = 1e-9)
+    @test all(isfinite, edqpt.rate)
+    @test all(isfinite, edqpt.mx)
+    @test all(isfinite, edqpt.s1)
+    @test all(isfinite, edqpt.s2)
+    @test all(isfinite, edqpt.lambda1)
+    @test all(isfinite, edqpt.lambda2)
+    @test all(isfinite, edqpt.o11)
+    @test all(isfinite, edqpt.ood)
+    @test all(isfinite, edqpt.I12)
+    @test all(isfinite, edqpt.I13)
+    @test all(isfinite, edqpt.I12_3)
+    @test all(isfinite, edqpt.I12_4)
+end

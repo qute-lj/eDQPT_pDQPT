@@ -6,7 +6,11 @@ using MPSKitModels
 using TensorKit
 
 include("DeNicola2021Canonical.jl")
-using .DeNicola2021Canonical: build_local_spinor
+using .DeNicola2021Canonical: build_local_spinor,
+    build_single_site_product_state,
+    fidelity_transfer_matrix,
+    leading_transfer_eigenvalues,
+    overlap_matrix
 
 export build_fig2_xxz_hamiltonian
 export mutual_information_bundle
@@ -14,6 +18,7 @@ export mutual_information_from_rho
 export paper_fig2_preset
 export partial_trace_sites
 export parse_fig2_cli
+export run_fig2_xxz_quench
 export von_neumann_entropy
 
 function paper_fig2_preset(label::Symbol)
@@ -173,6 +178,196 @@ function mutual_information_bundle(rho::AbstractMatrix{<:Number})
         "I13" => mutual_information_from_rho(rho, [1], [3], nsites),
         "I12_3" => mutual_information_from_rho(rho, [1, 2], [3], nsites),
         "I12_4" => mutual_information_from_rho(rho, [1, 2], [4], nsites),
+    )
+end
+
+function _loschmidt_rate_density(overlap::Number)
+    return -2 * log(abs(overlap))
+end
+
+function _padded_singular_values(schmidt; count::Int = 4)
+    diagonal = abs.(DeNicola2021Canonical._schmidt_diagonal(schmidt))
+    padded = zeros(Float64, count)
+    n = min(count, length(diagonal))
+    padded[1:n] .= diagonal[1:n]
+    return padded
+end
+
+function _padded_gamma_from_left(left_tensor, schmidt; count::Int = 2, tol::Real = 1e-12)
+    left_data = DeNicola2021Canonical._tensor_data(left_tensor)
+    diagonal = DeNicola2021Canonical._schmidt_diagonal(schmidt)
+    n = min(count, size(left_data, 1), size(left_data, 3), length(diagonal))
+    gamma = zeros(ComplexF64, count, size(left_data, 2), count)
+    for i in 1:n
+        abs(diagonal[i]) > tol || continue
+        gamma[i, :, 1:n] .= left_data[i, :, 1:n] ./ diagonal[i]
+    end
+    return gamma
+end
+
+function _state_transfer_diagnostics(psi::InfiniteMPS, amplitudes::AbstractVector{<:Number})
+    singular_values = _padded_singular_values(psi.C[1]; count = 4)
+    gamma = _padded_gamma_from_left(psi.AL[1], psi.C[1]; count = 2)
+    overlaps = overlap_matrix(gamma, amplitudes; count = 2)
+    transfer = fidelity_transfer_matrix(singular_values[1:2], overlaps)
+    eigs = leading_transfer_eigenvalues(transfer; count = 2)
+
+    return (
+        singular_values = singular_values,
+        entanglement_weights = abs2.(singular_values),
+        overlaps = overlaps,
+        transfer = transfer,
+        eigs = eigs,
+    )
+end
+
+function _append_site_tensor(block::Array{ComplexF64}, site_tensor::Array{ComplexF64})
+    size(block, ndims(block)) == size(site_tensor, 1) ||
+        throw(ArgumentError("bond mismatch while building block tensor"))
+    merged = reshape(block, :, size(block, ndims(block))) *
+        reshape(site_tensor, size(site_tensor, 1), :)
+    return reshape(
+        merged,
+        size(block, 1),
+        size(block)[2:(end - 1)]...,
+        size(site_tensor, 2),
+        size(site_tensor, 3),
+    )
+end
+
+function contiguous_block_density_matrix(psi::InfiniteMPS; nsites::Int = 4)
+    nsites >= 1 || throw(ArgumentError("nsites must be positive"))
+
+    block = ComplexF64.(convert(Array, psi.AC[1]))
+    for site in 2:nsites
+        block = _append_site_tensor(block, ComplexF64.(convert(Array, psi.AR[site])))
+    end
+
+    block_matrix = reshape(block, size(block, 1), 2^nsites, size(block, ndims(block)))
+    rho = zeros(ComplexF64, 2^nsites, 2^nsites)
+    for left in axes(block_matrix, 1), right in axes(block_matrix, 3)
+        state = @view block_matrix[left, :, right]
+        rho .+= state * state'
+    end
+
+    norm = real(tr(rho))
+    norm > 0 || throw(ArgumentError("block density matrix has zero trace"))
+    return rho / norm
+end
+
+function _single_site_expectation(psi::InfiniteMPS, op)
+    return real(expectation_value(psi, 1 => op))
+end
+
+function run_fig2_xxz_quench(;
+    preset::Symbol = :pdqpt,
+    dt::Real = 0.05,
+    steps::Integer = 80,
+    max_bond::Integer = 200,
+    cutoff::Real = 1e-9,
+)
+    steps >= 1 || throw(ArgumentError("steps must be positive"))
+    max_bond >= 1 || throw(ArgumentError("max_bond must be positive"))
+    cutoff > 0 || throw(ArgumentError("cutoff must be positive"))
+
+    cfg = paper_fig2_preset(preset)
+    amplitudes = build_local_spinor(cfg.initial_state)
+    psi0 = build_single_site_product_state(amplitudes)
+    psi = deepcopy(psi0)
+
+    H = build_fig2_xxz_hamiltonian(;
+        Jx = cfg.Jx,
+        Jy = cfg.Jy,
+        Jz = cfg.Jz,
+        hx = cfg.hx,
+        hz = cfg.hz,
+    )
+    evolution_mpo = MPSKit.DenseMPO(make_time_mpo(H, Float64(dt), WII()))
+    trscheme = truncrank(max_bond) & trunctol(; atol = cutoff)
+
+    times = collect(0.0:Float64(dt):(Float64(dt) * steps))
+    rate = Vector{Float64}(undef, length(times))
+    mx = Vector{Float64}(undef, length(times))
+    s1 = Vector{Float64}(undef, length(times))
+    s2 = Vector{Float64}(undef, length(times))
+    s3 = Vector{Float64}(undef, length(times))
+    s4 = Vector{Float64}(undef, length(times))
+    lambda1 = Vector{Float64}(undef, length(times))
+    lambda2 = Vector{Float64}(undef, length(times))
+    lambda3 = Vector{Float64}(undef, length(times))
+    lambda4 = Vector{Float64}(undef, length(times))
+    o11 = Vector{Float64}(undef, length(times))
+    ood = Vector{Float64}(undef, length(times))
+    tf1 = Vector{ComplexF64}(undef, length(times))
+    tf2 = Vector{ComplexF64}(undef, length(times))
+    tf1_abs = Vector{Float64}(undef, length(times))
+    tf2_abs = Vector{Float64}(undef, length(times))
+    I12 = Vector{Float64}(undef, length(times))
+    I13 = Vector{Float64}(undef, length(times))
+    I12_3 = Vector{Float64}(undef, length(times))
+    I12_4 = Vector{Float64}(undef, length(times))
+
+    sx = σˣ()
+
+    for (k, t) in enumerate(times)
+        diagnostics = _state_transfer_diagnostics(psi, amplitudes)
+        rho1234 = contiguous_block_density_matrix(psi; nsites = 4)
+        mi = mutual_information_bundle(rho1234)
+
+        rate[k] = _loschmidt_rate_density(dot(psi0, psi))
+        mx[k] = _single_site_expectation(psi, sx)
+        s1[k], s2[k], s3[k], s4[k] = diagnostics.singular_values
+        lambda1[k], lambda2[k], lambda3[k], lambda4[k] = diagnostics.entanglement_weights
+        o11[k] = abs(diagnostics.overlaps[1, 1])
+        ood[k] = max(abs(diagnostics.overlaps[1, 2]), abs(diagnostics.overlaps[2, 1]))
+        tf1[k], tf2[k] = diagnostics.eigs
+        tf1_abs[k], tf2_abs[k] = abs.(diagnostics.eigs)
+        I12[k] = mi["I12"]
+        I13[k] = mi["I13"]
+        I12_3[k] = mi["I12_3"]
+        I12_4[k] = mi["I12_4"]
+
+        if k < length(times)
+            psi = changebonds(evolution_mpo * psi, SvdCut(; trscheme = trscheme))
+            normalize!(psi)
+        end
+    end
+
+    return (
+        preset = preset,
+        initial_state = cfg.initial_state,
+        times = times,
+        rate = rate,
+        mx = mx,
+        s1 = s1,
+        s2 = s2,
+        s3 = s3,
+        s4 = s4,
+        lambda1 = lambda1,
+        lambda2 = lambda2,
+        lambda3 = lambda3,
+        lambda4 = lambda4,
+        o11 = o11,
+        ood = ood,
+        tf1 = tf1,
+        tf2 = tf2,
+        tf1_abs = tf1_abs,
+        tf2_abs = tf2_abs,
+        I12 = I12,
+        I13 = I13,
+        I12_3 = I12_3,
+        I12_4 = I12_4,
+        parameters = (
+            dt = Float64(dt),
+            steps = Int(steps),
+            max_bond = Int(max_bond),
+            cutoff = Float64(cutoff),
+            Jx = cfg.Jx,
+            Jy = cfg.Jy,
+            Jz = cfg.Jz,
+            hx = cfg.hx,
+            hz = cfg.hz,
+        ),
     )
 end
 
