@@ -1,5 +1,6 @@
 using Test
 using LinearAlgebra
+using Plots
 
 include("../src/DQPTFig2DeNicola2021.jl")
 using .DQPTFig2DeNicola2021
@@ -148,4 +149,54 @@ end
     @test all(isfinite, edqpt.I13)
     @test all(isfinite, edqpt.I12_3)
     @test all(isfinite, edqpt.I12_4)
+end
+
+@testset "Fig2 output and plotting helpers" begin
+    paths = planned_fig2_output_paths(; output_root = "outputs", figure_root = "figures/report")
+    @test occursin("outputs/fig2_pdqpt_denicola_2021.tsv", paths[:pdqpt_tsv])
+    @test occursin("outputs/fig2_edqpt_denicola_2021.tsv", paths[:edqpt_tsv])
+    @test occursin("figures/report/dqpt_fig2_denicola_2021.png", paths[:figure])
+    @test occursin("figures/report/dqpt_fig2_xxz_audit_denicola_2021.png", paths[:audit_figure])
+
+    mock = (
+        preset = :pdqpt,
+        times = [0.0, 0.1],
+        rate = [0.0, 0.2],
+        mx = [1.0, 0.8],
+        s1 = [1.0, 0.9],
+        s2 = [0.0, 0.2],
+        s3 = [0.0, 0.05],
+        s4 = [0.0, 0.01],
+        lambda1 = [1.0, 0.81],
+        lambda2 = [0.0, 0.04],
+        lambda3 = [0.0, 0.0025],
+        lambda4 = [0.0, 0.0001],
+        o11 = [1.0, 0.3],
+        ood = [0.0, 0.7],
+        tf1 = ComplexF64[1.0 + 0.0im, 0.8 + 0.1im],
+        tf2 = ComplexF64[0.0 + 0.0im, 0.2 - 0.1im],
+        tf1_abs = [1.0, hypot(0.8, 0.1)],
+        tf2_abs = [0.0, hypot(0.2, 0.1)],
+        I12 = [0.0, 0.1],
+        I13 = [0.0, 0.05],
+        I12_3 = [0.0, 0.12],
+        I12_4 = [0.0, 0.08],
+    )
+
+    path, io = mktemp()
+    close(io)
+    save_fig2_result(mock, path)
+    table = load_fig2_table(path)
+    @test haskey(table, "time")
+    @test haskey(table, "mx")
+    @test haskey(table, "lambda4")
+    @test haskey(table, "tf2_im")
+    @test haskey(table, "I12_4")
+    @test table["o11"] ≈ mock.o11
+    @test table["I12_3"] ≈ mock.I12_3
+
+    main_fig = build_fig2_plot(table, table)
+    audit_fig = build_fig2_audit_plot(table, table)
+    @test main_fig isa Plots.Plot
+    @test audit_fig isa Plots.Plot
 end

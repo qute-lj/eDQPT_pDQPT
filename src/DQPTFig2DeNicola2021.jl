@@ -1,9 +1,12 @@
 module DQPTFig2DeNicola2021
 
+using DelimitedFiles
 using LinearAlgebra
 using MPSKit
 using MPSKitModels
 using TensorKit
+ENV["GKSwstype"] = get(ENV, "GKSwstype", "100")
+using Plots
 
 include("DeNicola2021Canonical.jl")
 using .DeNicola2021Canonical: build_local_spinor,
@@ -13,12 +16,17 @@ using .DeNicola2021Canonical: build_local_spinor,
     overlap_matrix
 
 export build_fig2_xxz_hamiltonian
+export build_fig2_audit_plot
+export build_fig2_plot
+export load_fig2_table
 export mutual_information_bundle
 export mutual_information_from_rho
 export paper_fig2_preset
 export partial_trace_sites
 export parse_fig2_cli
+export planned_fig2_output_paths
 export run_fig2_xxz_quench
+export save_fig2_result
 export von_neumann_entropy
 
 function paper_fig2_preset(label::Symbol)
@@ -369,6 +377,295 @@ function run_fig2_xxz_quench(;
             hz = cfg.hz,
         ),
     )
+end
+
+function _ensure_dir(path::AbstractString)
+    mkpath(path)
+    return path
+end
+
+function planned_fig2_output_paths(;
+    output_root::AbstractString = "outputs",
+    figure_root::AbstractString = joinpath("figures", "report"),
+)
+    return Dict(
+        :pdqpt_tsv => joinpath(output_root, "fig2_pdqpt_denicola_2021.tsv"),
+        :edqpt_tsv => joinpath(output_root, "fig2_edqpt_denicola_2021.tsv"),
+        :figure => joinpath(figure_root, "dqpt_fig2_denicola_2021.png"),
+        :audit_figure => joinpath(figure_root, "dqpt_fig2_xxz_audit_denicola_2021.png"),
+    )
+end
+
+function save_fig2_result(result, path::AbstractString)
+    columns = [
+        "time",
+        "rate",
+        "mx",
+        "s1",
+        "s2",
+        "s3",
+        "s4",
+        "lambda1",
+        "lambda2",
+        "lambda3",
+        "lambda4",
+        "o11",
+        "ood",
+        "tf1_re",
+        "tf1_im",
+        "tf1_abs",
+        "tf2_re",
+        "tf2_im",
+        "tf2_abs",
+        "I12",
+        "I13",
+        "I12_3",
+        "I12_4",
+    ]
+
+    _ensure_dir(dirname(path))
+    open(path, "w") do io
+        println(io, join(columns, '\t'))
+        for i in eachindex(result.times)
+            row = (
+                result.times[i],
+                result.rate[i],
+                result.mx[i],
+                result.s1[i],
+                result.s2[i],
+                result.s3[i],
+                result.s4[i],
+                result.lambda1[i],
+                result.lambda2[i],
+                result.lambda3[i],
+                result.lambda4[i],
+                result.o11[i],
+                result.ood[i],
+                real(result.tf1[i]),
+                imag(result.tf1[i]),
+                result.tf1_abs[i],
+                real(result.tf2[i]),
+                imag(result.tf2[i]),
+                result.tf2_abs[i],
+                result.I12[i],
+                result.I13[i],
+                result.I12_3[i],
+                result.I12_4[i],
+            )
+            println(io, join(string.(row), '\t'))
+        end
+    end
+    return path
+end
+
+function load_fig2_table(path::AbstractString)
+    lines = readlines(path)
+    isempty(lines) && throw(ArgumentError("empty TSV file: $path"))
+
+    header = split(first(lines), '\t')
+    table = Dict(name => Float64[] for name in header)
+    for line in Iterators.drop(lines, 1)
+        isempty(line) && continue
+        values = split(line, '\t')
+        length(values) == length(header) || throw(ArgumentError("row/header mismatch in $path"))
+        for (name, value) in zip(header, values)
+            push!(table[name], parse(Float64, value))
+        end
+    end
+    return table
+end
+
+function _series(table, name::AbstractString)
+    haskey(table, name) || throw(ArgumentError("missing column: $name"))
+    return table[name]
+end
+
+function _add_entanglement_inset!(plt, table, parent_subplot::Int, inset_subplot::Int)
+    t = _series(table, "time")
+    plot!(
+        plt,
+        t,
+        _series(table, "lambda1");
+        subplot = inset_subplot,
+        inset = (parent_subplot, bbox(0.04, 0.04, 0.4, 0.32, :bottom, :right)),
+        color = :firebrick,
+        lw = 1.6,
+        legend = false,
+        xlabel = "",
+        ylabel = "",
+        xticks = false,
+        yticks = false,
+        bg_inside = nothing,
+    )
+    plot!(plt, t, _series(table, "lambda2"); subplot = inset_subplot, color = :navy, lw = 1.5)
+    plot!(plt, t, _series(table, "lambda3"); subplot = inset_subplot, color = :darkgreen, lw = 1.3)
+    plot!(plt, t, _series(table, "lambda4"); subplot = inset_subplot, color = :darkorange, lw = 1.3)
+    return plt
+end
+
+function _mi_panel!(plt, table, subplot_index::Int, title::AbstractString)
+    t = _series(table, "time")
+    plot!(
+        plt,
+        t,
+        _series(table, "I12");
+        subplot = subplot_index,
+        color = :royalblue3,
+        lw = 2.0,
+        xlabel = "t",
+        ylabel = "I",
+        title = title,
+        label = "I1,2",
+    )
+    plot!(plt, t, _series(table, "I12_3"); subplot = subplot_index, color = :firebrick, label = "I1,2;3")
+    plot!(plt, t, _series(table, "I13"); subplot = subplot_index, color = :forestgreen, label = "I1,3")
+    plot!(plt, t, _series(table, "I12_4"); subplot = subplot_index, color = :purple4, label = "I1,2;4")
+    return plt
+end
+
+function build_fig2_plot(pdqpt_table, edqpt_table)
+    default(
+        fontfamily = "sans-serif",
+        lw = 2.0,
+        grid = true,
+        framestyle = :box,
+        legend = :topright,
+        size = (1300, 1500),
+    )
+
+    plt = plot(layout = (3, 2), size = (1300, 1500))
+
+    t_p = _series(pdqpt_table, "time")
+    t_e = _series(edqpt_table, "time")
+
+    plot!(
+        plt,
+        t_p,
+        _series(pdqpt_table, "rate");
+        subplot = 1,
+        color = :forestgreen,
+        xlabel = "t",
+        ylabel = "f",
+        title = "Fig. 2(a) XXZ pDQPT",
+        label = "rate",
+    )
+    plot!(
+        plt,
+        t_e,
+        _series(edqpt_table, "rate");
+        subplot = 2,
+        color = :forestgreen,
+        xlabel = "t",
+        ylabel = "f",
+        title = "Fig. 2(b) XXZ eDQPT",
+        label = "rate",
+    )
+
+    _add_entanglement_inset!(plt, pdqpt_table, 1, 7)
+    _add_entanglement_inset!(plt, edqpt_table, 2, 8)
+
+    plot!(
+        plt,
+        t_p,
+        _series(pdqpt_table, "mx");
+        subplot = 3,
+        color = :royalblue3,
+        xlabel = "t",
+        ylabel = "<sigma_x>",
+        title = "Fig. 2(c) x-magnetization",
+        label = "<sigma_x>",
+    )
+    plot!(
+        plt,
+        t_e,
+        _series(edqpt_table, "mx");
+        subplot = 4,
+        color = :royalblue3,
+        xlabel = "t",
+        ylabel = "<sigma_x>",
+        title = "Fig. 2(d) x-magnetization",
+        label = "<sigma_x>",
+    )
+
+    _mi_panel!(plt, pdqpt_table, 5, "Fig. 2(e) mutual information")
+    _mi_panel!(plt, edqpt_table, 6, "Fig. 2(f) mutual information")
+
+    return plt
+end
+
+function build_fig2_audit_plot(pdqpt_table, edqpt_table)
+    default(
+        fontfamily = "sans-serif",
+        lw = 2.0,
+        grid = true,
+        framestyle = :box,
+        legend = :topright,
+        size = (1300, 1500),
+    )
+
+    plt = plot(layout = (3, 2), size = (1300, 1500))
+
+    for (subplot_index, table, label) in (
+        (1, pdqpt_table, "pDQPT rate / transfer"),
+        (2, edqpt_table, "eDQPT rate / transfer"),
+    )
+        t = _series(table, "time")
+        plot!(
+            plt,
+            t,
+            _series(table, "rate");
+            subplot = subplot_index,
+            color = :firebrick,
+            xlabel = "t",
+            ylabel = "rate",
+            title = label,
+            label = "rate",
+        )
+        plot!(plt, t, _series(table, "tf1_abs"); subplot = subplot_index, color = :navy, label = "|e1|")
+        plot!(plt, t, _series(table, "tf2_abs"); subplot = subplot_index, color = :darkorange, label = "|e2|")
+    end
+
+    for (subplot_index, table, label) in (
+        (3, pdqpt_table, "pDQPT entanglement"),
+        (4, edqpt_table, "eDQPT entanglement"),
+    )
+        t = _series(table, "time")
+        plot!(
+            plt,
+            t,
+            _series(table, "lambda1");
+            subplot = subplot_index,
+            color = :firebrick,
+            xlabel = "t",
+            ylabel = "lambda",
+            title = label,
+            label = "lambda1",
+        )
+        plot!(plt, t, _series(table, "lambda2"); subplot = subplot_index, color = :navy, label = "lambda2")
+        plot!(plt, t, _series(table, "lambda3"); subplot = subplot_index, color = :darkgreen, label = "lambda3")
+        plot!(plt, t, _series(table, "lambda4"); subplot = subplot_index, color = :darkorange, label = "lambda4")
+    end
+
+    for (subplot_index, table, label) in (
+        (5, pdqpt_table, "pDQPT overlaps"),
+        (6, edqpt_table, "eDQPT overlaps"),
+    )
+        t = _series(table, "time")
+        plot!(
+            plt,
+            t,
+            _series(table, "o11");
+            subplot = subplot_index,
+            color = :black,
+            xlabel = "t",
+            ylabel = "overlap",
+            title = label,
+            label = "|o11|",
+        )
+        plot!(plt, t, _series(table, "ood"); subplot = subplot_index, color = :forestgreen, label = "|ood|")
+    end
+
+    return plt
 end
 
 end
