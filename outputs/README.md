@@ -85,6 +85,78 @@ The paired compact figure is written outside this folder at:
 
 - `../figures/report/osborne_longrange_window.png`
 
+## PRL 2021 ESQPT proxy workflow
+
+This workflow does not define `ESQPT` through `eDQPT` signatures. Instead it uses finite-size
+spectral diagnostics:
+
+- local density-of-states proxy from level spacings
+- energy-resolved observables
+- inverse participation ratio (`IPR`)
+
+### ESQPT scan outputs
+
+File patterns:
+
+- `*_esqpt_spectrum.tsv`
+- `*_esqpt_summary.md`
+
+The TSV file stores:
+
+- `energy`
+- `density_proxy`
+- one model-dependent observable column
+- `ipr`
+
+The markdown summary records:
+
+- the explicit method statement
+- the finite-size model and boundary condition
+- candidate energies from density proxy
+- candidate energies from observable curvature
+- candidate energies from `IPR`
+
+Interpretation rule:
+
+- treat these files as finite-size `ESQPT` proxy scans
+- do not interpret them as direct proof that `eDQPT == ESQPT`
+
+### Quench-projection outputs
+
+File patterns:
+
+- `*_projection.tsv`
+- `*_projection_summary.md`
+
+These files answer a different question from the plain spectrum scan:
+
+- where does the initial quench state place its spectral weight
+- how much of that weight sits in the immediate neighborhood of each ESQPT candidate energy
+
+### Stability-scan outputs
+
+File patterns:
+
+- `*_stability.tsv`
+- `*_stability_summary.md`
+
+These files test whether the candidate energies per site drift strongly or remain comparatively stable as:
+
+- chain length changes
+- boundary condition changes
+
+### DQPT-ESQPT comparison outputs
+
+File patterns:
+
+- `*_dqpt.tsv`
+- `*_comparison_summary.md`
+
+These files combine the two earlier analyses:
+
+- finite-size DQPT rate peaks in time
+- spectral overlap with the ESQPT proxy neighborhood
+
 ## Notes
 
 - These runs are qualitative reproductions intended to mirror the paper's physical distinction between precession-dominated and entanglement-dominated behavior.
