@@ -11,11 +11,13 @@ using Plots
 include("DeNicola2021Canonical.jl")
 using .DeNicola2021Canonical: build_local_spinor,
     build_single_site_product_state,
+    canonical_gamma_from_left,
     fidelity_transfer_matrix,
     leading_transfer_eigenvalues,
     overlap_matrix
 
 export build_fig2_xxz_hamiltonian
+export build_fig2_time_grid
 export build_fig2_audit_plot
 export build_fig2_plot
 export load_fig2_table
@@ -28,6 +30,13 @@ export planned_fig2_output_paths
 export run_fig2_xxz_quench
 export save_fig2_result
 export von_neumann_entropy
+
+function _normalize_fig2_backend(label)
+    backend = label isa Symbol ? label : Symbol(label)
+    backend in (:wii_svdcut, :tdvp_optimal) ||
+        throw(ArgumentError("unknown Fig. 2 backend: $label"))
+    return backend
+end
 
 function paper_fig2_preset(label::Symbol)
     if label == :pdqpt
@@ -86,6 +95,10 @@ function parse_fig2_cli(args::Vector{String})
     output_prefix = "dqpt_fig2_denicola_2021"
     max_bond = 200
     cutoff = 1e-9
+    backend = :tdvp_optimal
+    refine_start = nothing
+    refine_stop = nothing
+    refine_dt = nothing
 
     i = 1
     if !isempty(args) && args[1] in ("pdqpt", "edqpt", "all")
@@ -108,6 +121,14 @@ function parse_fig2_cli(args::Vector{String})
             max_bond = parse(Int, value)
         elseif key == "--cutoff"
             cutoff = parse(Float64, value)
+        elseif key == "--backend"
+            backend = _normalize_fig2_backend(value)
+        elseif key == "--refine-start"
+            refine_start = parse(Float64, value)
+        elseif key == "--refine-stop"
+            refine_stop = parse(Float64, value)
+        elseif key == "--refine-dt"
+            refine_dt = parse(Float64, value)
         else
             throw(ArgumentError("unknown argument: $key"))
         end
@@ -122,7 +143,92 @@ function parse_fig2_cli(args::Vector{String})
         output_prefix = output_prefix,
         max_bond = max_bond,
         cutoff = cutoff,
+        backend = backend,
+        refine_start = refine_start,
+        refine_stop = refine_stop,
+        refine_dt = refine_dt,
     )
+end
+
+function _refinement_spec(;
+    dt::Float64,
+    tmax::Float64,
+    refine_start,
+    refine_stop,
+    refine_dt,
+)
+    provided = (!isnothing(refine_start), !isnothing(refine_stop), !isnothing(refine_dt))
+    any(provided) || return nothing
+    all(provided) || throw(ArgumentError("refinement requires refine_start, refine_stop, and refine_dt"))
+
+    start = Float64(refine_start)
+    stop = Float64(refine_stop)
+    step = Float64(refine_dt)
+
+    0.0 <= start < stop <= tmax || throw(ArgumentError("refinement window must satisfy 0 <= start < stop <= tmax"))
+    0.0 < step < dt || throw(ArgumentError("refine_dt must be positive and smaller than dt"))
+    return (start = start, stop = stop, dt = step)
+end
+
+function _uniform_time_segment(start::Float64, stop::Float64, dt::Float64; include_start::Bool = true)
+    stop >= start || throw(ArgumentError("segment stop must be >= start"))
+    dt > 0 || throw(ArgumentError("segment dt must be positive"))
+
+    times = Float64[]
+    include_start && push!(times, start)
+
+    t = start
+    tol = max(dt, eps(Float64)) * 1e-9
+    while t + dt < stop - tol
+        t += dt
+        push!(times, t)
+    end
+
+    if isempty(times) || !isapprox(times[end], stop; atol = tol, rtol = 0.0)
+        push!(times, stop)
+    end
+    return times
+end
+
+function build_fig2_time_grid(;
+    dt::Real = 0.05,
+    steps::Integer = 80,
+    refine_start = nothing,
+    refine_stop = nothing,
+    refine_dt = nothing,
+)
+    steps >= 1 || throw(ArgumentError("steps must be positive"))
+    coarse_dt = Float64(dt)
+    tmax = coarse_dt * Int(steps)
+    refinement = _refinement_spec(;
+        dt = coarse_dt,
+        tmax = tmax,
+        refine_start = refine_start,
+        refine_stop = refine_stop,
+        refine_dt = refine_dt,
+    )
+    isnothing(refinement) && return collect(0.0:coarse_dt:tmax)
+
+    times = _uniform_time_segment(0.0, refinement.start, coarse_dt)
+    append!(
+        times,
+        _uniform_time_segment(
+            refinement.start,
+            refinement.stop,
+            refinement.dt;
+            include_start = false,
+        ),
+    )
+    append!(
+        times,
+        _uniform_time_segment(
+            refinement.stop,
+            tmax,
+            coarse_dt;
+            include_start = false,
+        ),
+    )
+    return times
 end
 
 function _validate_density_matrix(rho::AbstractMatrix{<:Number}, nsites::Int)
@@ -204,28 +310,25 @@ function _loschmidt_rate_density(overlap::Number)
 end
 
 function _padded_singular_values(schmidt; count::Int = 4)
-    diagonal = abs.(DeNicola2021Canonical._schmidt_diagonal(schmidt))
+    singular_values = svdvals(ComplexF64.(convert(Array, schmidt)))
     padded = zeros(Float64, count)
-    n = min(count, length(diagonal))
-    padded[1:n] .= diagonal[1:n]
+    n = min(count, length(singular_values))
+    padded[1:n] .= singular_values[1:n]
     return padded
 end
 
-function _padded_gamma_from_left(left_tensor, schmidt; count::Int = 2, tol::Real = 1e-12)
-    left_data = DeNicola2021Canonical._tensor_data(left_tensor)
-    diagonal = DeNicola2021Canonical._schmidt_diagonal(schmidt)
-    n = min(count, size(left_data, 1), size(left_data, 3), length(diagonal))
-    gamma = zeros(ComplexF64, count, size(left_data, 2), count)
-    for i in 1:n
-        abs(diagonal[i]) > tol || continue
-        gamma[i, :, 1:n] .= left_data[i, :, 1:n] ./ diagonal[i]
-    end
+function _padded_gamma_from_left(center_tensor, schmidt; count::Int = 2, tol::Real = 1e-12)
+    center_data = DeNicola2021Canonical._tensor_data(center_tensor)
+    n = min(count, length(svdvals(ComplexF64.(convert(Array, schmidt)))))
+    gamma = zeros(ComplexF64, count, size(center_data, 2), count)
+    n == 0 && return gamma
+    gamma[1:n, :, 1:n] .= canonical_gamma_from_left(center_tensor, schmidt; count = n, tol = tol)
     return gamma
 end
 
 function _state_transfer_diagnostics(psi::InfiniteMPS, amplitudes::AbstractVector{<:Number})
     singular_values = _padded_singular_values(psi.C[1]; count = 4)
-    gamma = _padded_gamma_from_left(psi.AL[1], psi.C[1]; count = 2)
+    gamma = _padded_gamma_from_left(psi.AC[1], psi.C[1]; count = 2)
     overlaps = overlap_matrix(gamma, amplitudes; count = 2)
     transfer = fidelity_transfer_matrix(singular_values[1:2], overlaps)
     eigs = leading_transfer_eigenvalues(transfer; count = 2)
@@ -277,16 +380,80 @@ function _single_site_expectation(psi::InfiniteMPS, op)
     return real(expectation_value(psi, 1 => op))
 end
 
+function _initialize_fig2_backend(H, dt::Float64, max_bond::Int, cutoff::Float64, backend::Symbol)
+    if backend == :wii_svdcut
+        evolution_mpo = MPSKit.DenseMPO(make_time_mpo(H, dt, WII()))
+        trscheme = truncrank(max_bond) & trunctol(; atol = cutoff)
+        return (
+            backend = backend,
+            evolution_mpo = evolution_mpo,
+            mpo_dt = dt,
+            trscheme = trscheme,
+            envs = nothing,
+            expand_steps = 0,
+        )
+    elseif backend == :tdvp_optimal
+        return (
+            backend = backend,
+            evolution_mpo = nothing,
+            mpo_dt = nothing,
+            trscheme = truncrank(max_bond) & trunctol(; atol = cutoff),
+            envs = nothing,
+            expand_steps = max(max_bond - 1, 0),
+        )
+    else
+        throw(ArgumentError("unsupported Fig. 2 backend: $backend"))
+    end
+end
+
+function _advance_fig2_state(psi::InfiniteMPS, H, dt::Float64, step_index::Int, state)
+    if state.backend == :wii_svdcut
+        next_state = state
+        if !isapprox(state.mpo_dt, dt; atol = 1e-12, rtol = 0.0)
+            next_state = merge(
+                state,
+                (
+                    evolution_mpo = MPSKit.DenseMPO(make_time_mpo(H, dt, WII())),
+                    mpo_dt = dt,
+                ),
+            )
+        end
+        next_psi = changebonds(next_state.evolution_mpo * psi, SvdCut(; trscheme = next_state.trscheme))
+        normalize!(next_psi)
+        return next_psi, next_state
+    elseif state.backend == :tdvp_optimal
+        envs = isnothing(state.envs) ? environments(psi, H) : state.envs
+        next_psi = psi
+        if step_index <= state.expand_steps
+            next_psi, envs = changebonds(
+                next_psi,
+                H,
+                OptimalExpand(; trscheme = truncrank(1)),
+                envs,
+            )
+        end
+        next_psi, envs = timestep(next_psi, H, 0.0, dt, TDVP(), envs)
+        return next_psi, merge(state, (envs = envs,))
+    else
+        throw(ArgumentError("unsupported Fig. 2 backend: $(state.backend)"))
+    end
+end
+
 function run_fig2_xxz_quench(;
     preset::Symbol = :pdqpt,
     dt::Real = 0.05,
     steps::Integer = 80,
+    refine_start = nothing,
+    refine_stop = nothing,
+    refine_dt = nothing,
     max_bond::Integer = 200,
     cutoff::Real = 1e-9,
+    backend::Symbol = :tdvp_optimal,
 )
     steps >= 1 || throw(ArgumentError("steps must be positive"))
     max_bond >= 1 || throw(ArgumentError("max_bond must be positive"))
     cutoff > 0 || throw(ArgumentError("cutoff must be positive"))
+    backend = _normalize_fig2_backend(backend)
 
     cfg = paper_fig2_preset(preset)
     amplitudes = build_local_spinor(cfg.initial_state)
@@ -300,10 +467,15 @@ function run_fig2_xxz_quench(;
         hx = cfg.hx,
         hz = cfg.hz,
     )
-    evolution_mpo = MPSKit.DenseMPO(make_time_mpo(H, Float64(dt), WII()))
-    trscheme = truncrank(max_bond) & trunctol(; atol = cutoff)
+    backend_state = _initialize_fig2_backend(H, Float64(dt), Int(max_bond), Float64(cutoff), backend)
 
-    times = collect(0.0:Float64(dt):(Float64(dt) * steps))
+    times = build_fig2_time_grid(;
+        dt = dt,
+        steps = steps,
+        refine_start = refine_start,
+        refine_stop = refine_stop,
+        refine_dt = refine_dt,
+    )
     rate = Vector{Float64}(undef, length(times))
     mx = Vector{Float64}(undef, length(times))
     s1 = Vector{Float64}(undef, length(times))
@@ -346,8 +518,8 @@ function run_fig2_xxz_quench(;
         I12_4[k] = mi["I12_4"]
 
         if k < length(times)
-            psi = changebonds(evolution_mpo * psi, SvdCut(; trscheme = trscheme))
-            normalize!(psi)
+            step_dt = times[k + 1] - t
+            psi, backend_state = _advance_fig2_state(psi, H, step_dt, k, backend_state)
         end
     end
 
@@ -376,8 +548,12 @@ function run_fig2_xxz_quench(;
         I12_3 = I12_3,
         I12_4 = I12_4,
         parameters = (
+            backend = backend,
             dt = Float64(dt),
             steps = Int(steps),
+            refine_start = isnothing(refine_start) ? nothing : Float64(refine_start),
+            refine_stop = isnothing(refine_stop) ? nothing : Float64(refine_stop),
+            refine_dt = isnothing(refine_dt) ? nothing : Float64(refine_dt),
             max_bond = Int(max_bond),
             cutoff = Float64(cutoff),
             Jx = cfg.Jx,

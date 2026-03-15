@@ -66,14 +66,15 @@ end
     gamma[2, :, 1] .= ComplexF64[inv(sqrt(2)), inv(sqrt(2))]
     gamma[2, :, 2] .= ComplexF64[0.0, 1.0]
 
-    al_data = similar(gamma)
+    ac_data = similar(gamma)
     for i in axes(gamma, 1), sigma in axes(gamma, 2), j in axes(gamma, 3)
-        al_data[i, sigma, j] = schmidt[i, i] * gamma[i, sigma, j]
+        ac_data[i, sigma, j] = schmidt[i, i] * gamma[i, sigma, j]
     end
-    al = TensorMap(al_data, ℂ^2 ⊗ ℂ^2 ← ℂ^2)
+    ac = TensorMap(ac_data, ℂ^2 ⊗ ℂ^2 ← ℂ^2)
 
-    recovered = canonical_gamma_from_left(al, schmidt; count = 2)
+    recovered = canonical_gamma_from_left(ac, schmidt; count = 2)
     @test recovered ≈ gamma
+    @test DQPTFig1DeNicola2021._padded_gamma_from_left(ac, schmidt; count = 2) ≈ gamma
 
     singular_values = leading_singular_values(schmidt; count = 2)
     @test singular_values ≈ [0.9, 0.3]

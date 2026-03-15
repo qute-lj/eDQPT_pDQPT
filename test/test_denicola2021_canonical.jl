@@ -26,14 +26,14 @@ end
     gamma[2, :, 1] .= ComplexF64[inv(sqrt(2)), inv(sqrt(2))]
     gamma[2, :, 2] .= ComplexF64[0.0, 1.0]
 
-    al_data = similar(gamma)
+    ac_data = similar(gamma)
     for i in axes(gamma, 1), sigma in axes(gamma, 2), j in axes(gamma, 3)
-        al_data[i, sigma, j] = schmidt[i, i] * gamma[i, sigma, j]
+        ac_data[i, sigma, j] = schmidt[i, i] * gamma[i, sigma, j]
     end
-    al = TensorMap(al_data, ℂ^2 ⊗ ℂ^2 ← ℂ^2)
+    ac = TensorMap(ac_data, ℂ^2 ⊗ ℂ^2 ← ℂ^2)
 
-    recovered = canonical_gamma_from_left(al, schmidt; count = 2)
-    @test recovered ≈ gamma
+    recovered = canonical_gamma_from_left(ac, schmidt; count = 2)
+    @test abs.(recovered) ≈ abs.(gamma)
 
     singular_values = leading_singular_values(schmidt; count = 2)
     @test singular_values ≈ [0.9, 0.3]
@@ -56,4 +56,49 @@ end
     expected_eigs = sort(collect(eigvals(expected_transfer)); by = value -> -abs(value))
     @test eigs ≈ expected_eigs
     @test abs(eigs[1]) >= abs(eigs[2])
+end
+
+@testset "De Nicola 2021 diagnostics with non-diagonal gauge tensor" begin
+    schmidt = DiagonalTensorMap(ComplexF64[0.9, 0.3], ℂ^2)
+    gamma = zeros(ComplexF64, 2, 2, 2)
+    gamma[1, :, 1] .= ComplexF64[1.0, 0.0]
+    gamma[1, :, 2] .= ComplexF64[inv(sqrt(2)), inv(sqrt(2))]
+    gamma[2, :, 1] .= ComplexF64[inv(sqrt(2)), inv(sqrt(2))]
+    gamma[2, :, 2] .= ComplexF64[0.0, 1.0]
+
+    a_data = similar(gamma)
+    for i in axes(gamma, 1), sigma in axes(gamma, 2), j in axes(gamma, 3)
+        a_data[i, sigma, j] = schmidt[i, i] * gamma[i, sigma, j]
+    end
+
+    U = ComplexF64[
+        inv(sqrt(2)) inv(sqrt(2));
+        inv(sqrt(2)) -inv(sqrt(2));
+    ]
+    V = ComplexF64[
+        1.0 0.0;
+        0.0 im;
+    ]
+
+    c_data = U * ComplexF64.(convert(Array, schmidt)) * V'
+    ac_data = similar(a_data)
+    for sigma in axes(a_data, 2)
+        ac_data[:, sigma, :] .= U * a_data[:, sigma, :] * V'
+    end
+
+    c = TensorMap(c_data, ℂ^2 ← ℂ^2)
+    ac = TensorMap(ac_data, ℂ^2 ⊗ ℂ^2 ← ℂ^2)
+
+    recovered = canonical_gamma_from_left(ac, c; count = 2)
+    @test abs.(recovered) ≈ abs.(gamma)
+
+    singular_values = leading_singular_values(c; count = 2)
+    @test singular_values ≈ [0.9, 0.3]
+
+    overlaps = overlap_matrix(recovered, ComplexF64[1.0, 0.0]; count = 2)
+    expected_overlaps = ComplexF64[
+        1.0 inv(sqrt(2));
+        inv(sqrt(2)) 0.0;
+    ]
+    @test abs.(overlaps) ≈ abs.(expected_overlaps)
 end

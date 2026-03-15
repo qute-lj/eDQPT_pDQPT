@@ -1,6 +1,7 @@
 using Test
 using LinearAlgebra
 using Plots
+using TensorKit
 
 include("../src/DQPTFig2DeNicola2021.jl")
 using .DQPTFig2DeNicola2021
@@ -51,15 +52,45 @@ end
         "0.05",
         "--output-prefix",
         "demo",
+        "--backend",
+        "tdvp_optimal",
+        "--refine-start",
+        "1.0",
+        "--refine-stop",
+        "1.3",
+        "--refine-dt",
+        "0.01",
     ])
     @test parsed.mode == :pdqpt
     @test parsed.steps == 8
     @test parsed.dt == 0.05
     @test parsed.output_prefix == "demo"
+    @test parsed.backend == :tdvp_optimal
+    @test parsed.refine_start == 1.0
+    @test parsed.refine_stop == 1.3
+    @test parsed.refine_dt == 0.01
 
     defaults = parse_fig2_cli(String[])
     @test defaults.mode == :all
     @test defaults.output_prefix == "dqpt_fig2_denicola_2021"
+    @test defaults.backend == :tdvp_optimal
+    @test isnothing(defaults.refine_start)
+    @test isnothing(defaults.refine_stop)
+    @test isnothing(defaults.refine_dt)
+end
+
+@testset "Fig2 time-grid refinement helper" begin
+    coarse = DQPTFig2DeNicola2021.build_fig2_time_grid(; dt = 0.05, steps = 6)
+    @test coarse ≈ collect(0.0:0.05:0.30)
+
+    refined = DQPTFig2DeNicola2021.build_fig2_time_grid(;
+        dt = 0.05,
+        steps = 6,
+        refine_start = 0.10,
+        refine_stop = 0.20,
+        refine_dt = 0.02,
+    )
+    @test refined ≈ [0.0, 0.05, 0.10, 0.12, 0.14, 0.16, 0.18, 0.20, 0.25, 0.30]
 end
 
 @testset "Fig2 reduced density and mutual information helpers" begin
@@ -81,6 +112,23 @@ end
     @test keys(mi) == Set(["I12", "I13", "I12_3", "I12_4"])
 end
 
+@testset "Fig2 transfer diagnostics helper" begin
+    schmidt = DiagonalTensorMap(ComplexF64[0.9, 0.3], ℂ^2)
+    gamma = zeros(ComplexF64, 2, 2, 2)
+    gamma[1, :, 1] .= ComplexF64[1.0, 0.0]
+    gamma[1, :, 2] .= ComplexF64[inv(sqrt(2)), inv(sqrt(2))]
+    gamma[2, :, 1] .= ComplexF64[inv(sqrt(2)), inv(sqrt(2))]
+    gamma[2, :, 2] .= ComplexF64[0.0, 1.0]
+
+    ac_data = similar(gamma)
+    for i in axes(gamma, 1), sigma in axes(gamma, 2), j in axes(gamma, 3)
+        ac_data[i, sigma, j] = schmidt[i, i] * gamma[i, sigma, j]
+    end
+    ac = TensorMap(ac_data, ℂ^2 ⊗ ℂ^2 ← ℂ^2)
+
+    @test DQPTFig2DeNicola2021._padded_gamma_from_left(ac, schmidt; count = 2) ≈ gamma
+end
+
 @testset "Fig2 XXZ smoke tests" begin
     pdqpt = run_fig2_xxz_quench(;
         preset = :pdqpt,
@@ -90,6 +138,7 @@ end
         cutoff = 1e-8,
     )
     @test pdqpt.preset == :pdqpt
+    @test pdqpt.parameters.backend == :tdvp_optimal
     @test length(pdqpt.times) == 3
     @test length(pdqpt.rate) == 3
     @test length(pdqpt.mx) == 3
@@ -130,6 +179,7 @@ end
         cutoff = 1e-8,
     )
     @test edqpt.preset == :edqpt
+    @test edqpt.parameters.backend == :tdvp_optimal
     @test length(edqpt.times) == 3
     @test isapprox(edqpt.rate[1], 0.0; atol = 1e-9)
     @test isapprox(edqpt.mx[1], 1.0; atol = 1e-9)
@@ -149,6 +199,40 @@ end
     @test all(isfinite, edqpt.I13)
     @test all(isfinite, edqpt.I12_3)
     @test all(isfinite, edqpt.I12_4)
+
+    tdvp = run_fig2_xxz_quench(;
+        preset = :pdqpt,
+        dt = 0.05,
+        steps = 2,
+        max_bond = 16,
+        cutoff = 1e-8,
+        backend = :tdvp_optimal,
+    )
+    @test tdvp.parameters.backend == :tdvp_optimal
+    @test length(tdvp.times) == 3
+    @test isapprox(tdvp.rate[1], 0.0; atol = 1e-9)
+    @test isapprox(tdvp.mx[1], 1.0; atol = 1e-9)
+    @test all(isfinite, tdvp.rate)
+    @test all(isfinite, tdvp.mx)
+    @test all(isfinite, tdvp.o11)
+    @test all(isfinite, tdvp.ood)
+    @test maximum(tdvp.o11) <= 1 + 1e-9
+
+    refined = run_fig2_xxz_quench(;
+        preset = :edqpt,
+        dt = 0.05,
+        steps = 4,
+        refine_start = 0.05,
+        refine_stop = 0.10,
+        refine_dt = 0.025,
+        max_bond = 8,
+        cutoff = 1e-8,
+        backend = :wii_svdcut,
+    )
+    @test refined.times ≈ [0.0, 0.05, 0.075, 0.10, 0.15, 0.20]
+    @test length(refined.rate) == length(refined.times)
+    @test length(refined.mx) == length(refined.times)
+    @test refined.parameters.backend == :wii_svdcut
 end
 
 @testset "Fig2 output and plotting helpers" begin

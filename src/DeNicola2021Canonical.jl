@@ -44,30 +44,44 @@ function _schmidt_diagonal(schmidt)
     return ComplexF64.(diag(schmidt_matrix))
 end
 
+function _schmidt_svd(schmidt)
+    schmidt_matrix = _tensor_data(schmidt)
+    return svd(schmidt_matrix)
+end
+
 function leading_singular_values(schmidt; count::Int = 2)
     count > 0 || throw(ArgumentError("count must be positive"))
-    diagonal = _schmidt_diagonal(schmidt)
-    count <= length(diagonal) || throw(ArgumentError("count exceeds Schmidt rank"))
-    return abs.(diagonal[1:count])
+    singular_values = _schmidt_svd(schmidt).S
+    count <= length(singular_values) || throw(ArgumentError("count exceeds Schmidt rank"))
+    return Float64.(singular_values[1:count])
 end
 
 function leading_entanglement_spectrum(schmidt; count::Int = 2)
     return abs2.(leading_singular_values(schmidt; count = count))
 end
 
-function canonical_gamma_from_left(left_tensor, schmidt; count::Int = 2, tol::Real = 1e-12)
+function canonical_gamma_from_left(center_tensor, schmidt; count::Int = 2, tol::Real = 1e-12)
     count > 0 || throw(ArgumentError("count must be positive"))
-    left_data = _tensor_data(left_tensor)
-    singular_values = _schmidt_diagonal(schmidt)
-    count <= size(left_data, 1) || throw(ArgumentError("count exceeds left bond dimension"))
-    count <= size(left_data, 3) || throw(ArgumentError("count exceeds right bond dimension"))
+    center_data = _tensor_data(center_tensor)
+    schmidt_svd = _schmidt_svd(schmidt)
+    singular_values = schmidt_svd.S
+    left_rotation = schmidt_svd.U
+    right_rotation = schmidt_svd.V
+    count <= size(center_data, 1) || throw(ArgumentError("count exceeds left bond dimension"))
+    count <= size(center_data, 3) || throw(ArgumentError("count exceeds right bond dimension"))
     count <= length(singular_values) || throw(ArgumentError("count exceeds Schmidt rank"))
 
-    gamma = zeros(ComplexF64, count, size(left_data, 2), count)
+    # MPSKit stores a general gauge tensor C. We first rotate AC into the Schmidt basis
+    # defined by the singular-value decomposition C = U * Λ * V', then recover Γ from A = ΛΓ.
+    gamma = zeros(ComplexF64, count, size(center_data, 2), count)
+    rotated_center = Array{ComplexF64}(undef, size(center_data))
+    for sigma in axes(center_data, 2)
+        rotated_center[:, sigma, :] .= left_rotation' * center_data[:, sigma, :] * right_rotation
+    end
     for i in 1:count
         abs(singular_values[i]) > tol ||
             throw(ArgumentError("cannot divide by Schmidt value close to zero at index $i"))
-        gamma[i, :, :] .= left_data[i, :, 1:count] ./ singular_values[i]
+        gamma[i, :, :] .= rotated_center[i, :, 1:count] ./ singular_values[i]
     end
     return gamma
 end

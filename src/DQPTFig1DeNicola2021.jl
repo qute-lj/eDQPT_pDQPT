@@ -52,28 +52,25 @@ function build_fig1_ising_hamiltonian(; J::Real, hx::Real, hz::Real)
 end
 
 function _padded_singular_values(schmidt; count::Int = 2)
-    diagonal = abs.(DeNicola2021Canonical._schmidt_diagonal(schmidt))
+    singular_values = svdvals(ComplexF64.(convert(Array, schmidt)))
     padded = zeros(Float64, count)
-    n = min(count, length(diagonal))
-    padded[1:n] .= diagonal[1:n]
+    n = min(count, length(singular_values))
+    padded[1:n] .= singular_values[1:n]
     return padded
 end
 
-function _padded_gamma_from_left(left_tensor, schmidt; count::Int = 2, tol::Real = 1e-12)
-    left_data = DeNicola2021Canonical._tensor_data(left_tensor)
-    diagonal = DeNicola2021Canonical._schmidt_diagonal(schmidt)
-    n = min(count, size(left_data, 1), size(left_data, 3), length(diagonal))
-    gamma = zeros(ComplexF64, count, size(left_data, 2), count)
-    for i in 1:n
-        abs(diagonal[i]) > tol || continue
-        gamma[i, :, 1:n] .= left_data[i, :, 1:n] ./ diagonal[i]
-    end
+function _padded_gamma_from_left(center_tensor, schmidt; count::Int = 2, tol::Real = 1e-12)
+    center_data = DeNicola2021Canonical._tensor_data(center_tensor)
+    n = min(count, length(svdvals(ComplexF64.(convert(Array, schmidt)))))
+    gamma = zeros(ComplexF64, count, size(center_data, 2), count)
+    n == 0 && return gamma
+    gamma[1:n, :, 1:n] .= canonical_gamma_from_left(center_tensor, schmidt; count = n, tol = tol)
     return gamma
 end
 
 function _state_transfer_diagnostics(psi::InfiniteMPS, amplitudes::AbstractVector{<:Number}; count::Int = 2)
     singular_values = _padded_singular_values(psi.C[1]; count = count)
-    gamma = _padded_gamma_from_left(psi.AL[1], psi.C[1]; count = count)
+    gamma = _padded_gamma_from_left(psi.AC[1], psi.C[1]; count = count)
     overlaps = overlap_matrix(gamma, amplitudes; count = count)
     transfer = fidelity_transfer_matrix(singular_values, overlaps)
     eigs = leading_transfer_eigenvalues(transfer; count = count)

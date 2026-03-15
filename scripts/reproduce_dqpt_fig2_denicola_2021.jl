@@ -12,8 +12,12 @@ function _run_and_save(preset::Symbol, path::AbstractString, cli)
         preset = preset,
         dt = cli.dt,
         steps = steps,
+        refine_start = cli.refine_start,
+        refine_stop = cli.refine_stop,
+        refine_dt = cli.refine_dt,
         max_bond = cli.max_bond,
         cutoff = cli.cutoff,
+        backend = cli.backend,
     )
     save_fig2_result(result, path)
     println("saved ", preset, " dataset -> ", path)
